@@ -5,6 +5,7 @@ import argparse
 import random
 import torch
 import time
+from torch.utils.benchmark import Timer
 
 
 # TODO - a lot of this was copied from pytorch/jit/scripts/log_extract.py,
@@ -31,6 +32,7 @@ def no_fuser(*args, **kwargs):
         torch._C._jit_set_nvfuser_enabled(old_nvfuser_state)
 
 
+'''
 def make_tensor_from_type(inp_type: torch._C.TensorType):
     if inp_type.requires_grad() is not False:
         raise NotImplementedError("Tensors with requires_grad are not implemented")
@@ -38,6 +40,14 @@ def make_tensor_from_type(inp_type: torch._C.TensorType):
         inp_type.sizes(),
         dtype=inp_type.dtype(),
         device=inp_type.device())
+'''
+
+def make_tensor_from_type(inp_type: torch._C.TensorType):
+    size = inp_type.sizes()
+    stride = inp_type.strides()
+    device = inp_type.device()
+    dtype = inp_type.dtype()
+    return torch.empty_strided(size=size, stride=stride, device=device, dtype=dtype)
 
 
 def load_graph_and_inputs(ir: str) -> Tuple[Any, List[Any]]:
@@ -60,17 +70,9 @@ def load_graph_and_inputs(ir: str) -> Tuple[Any, List[Any]]:
 
 
 def time_cuda(fn, inputs, test_runs):
-    start_event = torch.cuda.Event(enable_timing=True)
-    end_event = torch.cuda.Event(enable_timing=True)
-    torch.cuda.synchronize()
-    start_event.record()
-    torch.cuda.synchronize()
-    for i in range(test_runs):
-        fn(*inputs)
-        torch.cuda.synchronize()
-    end_event.record()
-    torch.cuda.synchronize()
-    return start_event.elapsed_time(end_event) / test_runs
+    t = Timer(stmt="fn(*inputs)", globals={"fn": fn, "inputs": inputs})
+    times = t.blocked_autorange()
+    return times.median * 1000  # time in ms
 
 
 def time_cpu(fn, inputs, test_runs):
@@ -82,6 +84,7 @@ def time_cpu(fn, inputs, test_runs):
 
 
 def run_test(ir, inputs, *, warmup_runs=10, test_runs=20) -> float:
+    torch.jit._state._python_cu.drop_all_functions()
     graph, _ = load_graph_and_inputs(ir)
     for _ in range(warmup_runs):
         graph(*inputs)
